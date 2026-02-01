@@ -51,6 +51,7 @@ async function handleTransformerEndpoint(
   }
 
   try {
+    req.log.debug(`[Routes] handleTransformerEndpoint: provider=${providerName}, transformer=${transformer.name}`);
     // Process request transformer chain
     const { requestBody, config, bypass } = await processRequestTransformers(
       body,
@@ -210,6 +211,7 @@ async function processRequestTransformers(
   let bypass = false;
 
   // Check if transformers should be bypassed (passthrough mode)
+  // If provider has only one transformer and it matches the current one, skip others
   bypass = shouldBypassTransformers(provider, transformer, body);
 
   if (bypass) {
