@@ -167,9 +167,12 @@ export class OpenAITransformer implements Transformer {
         };
       } else
         return {
-          name: tool.name,
-          description: tool.description || "",
-          input_schema: tool.input_schema,
+          type: "function" as const,
+          function: {
+            name: tool.name,
+            description: tool.description || "",
+            parameters: tool.input_schema,
+          },
         };
     });
   }

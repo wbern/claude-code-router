@@ -70,7 +70,7 @@ export class OpenAICompatibleTransformer implements Transformer {
     const openaiRequest: Record<string, any> = {
       model: request.model,
       messages: this.convertMessagesToOpenAI(request.messages), // 转换消息格式
-      max_tokens: request.max_tokens,
+      // max_tokens: request.max_tokens, // 外部OpenAI不支持 max_tokens 参数
       temperature: request.temperature,
       stream: request.stream,
     };
@@ -86,9 +86,12 @@ export class OpenAICompatibleTransformer implements Transformer {
     }
 
     // 处理推理相关参数
-    if (request.reasoning) {
-      openaiRequest.reasoning = request.reasoning;
-    }
+    // if (!request.reasoning) {
+    //   openaiRequest.reasoning = request.reasoning;
+    //   openaiRequest.thinking = {
+    //     "thinking": {"type": "disabled"}
+    //   };
+    // }
 
     this.logger?.debug(`[OpenAICompatible] transformRequestIn: toolsCount=${openaiRequest.tools?.length || 0}`);
     return openaiRequest;
@@ -227,35 +230,18 @@ export class OpenAICompatibleTransformer implements Transformer {
         };
 
         // 处理参数，移除 $schema 字段
-      if (tool.function.parameters) {
-        const parameters = { ...tool.function.parameters };
-        // 移除 parameters 中的 $schema 字段
-        delete parameters["$schema"];
-        // 移除 parameters.properties 中的 $schema 字段
-        if (parameters.properties) {
-          const properties = { ...parameters.properties };
-          delete properties["$schema"];
-          parameters.properties = properties;
+        if (tool.function.parameters) {
+          const parameters = { ...tool.function.parameters };
+          // 移除 parameters 中的 $schema 字段
+          delete parameters["$schema"];
+          // 移除 parameters.properties 中的 $schema 字段
+          if (parameters.properties) {
+            const properties = { ...parameters.properties };
+            delete properties["$schema"];
+            parameters.properties = properties;
+          }
+          convertTool.function.parameters = parameters;
         }
-        convertTool.function.parameters = parameters;
-      }
-     } else {
-        convertTool = {
-          name: tool.name,
-          description: tool.description,
-          input_schema: tool.input_schema || [],
-        };
-
-        const inputSchema = tool.input_schema || {};
-        delete inputSchema["$schema"];
-        // 移除 input_schema.properties 中的 $schema 字段
-        if (inputSchema.properties) {
-          const properties = { ...inputSchema.properties };
-          delete properties["$schema"];
-          inputSchema.properties = properties;
-        }
-
-        convertTool.input_schema = inputSchema;
       }
       this.logger?.debug(`[OpenAICompatible] convertUnifiedToolsToOpenAI: convertedTool=${JSON.stringify(convertTool)}`);
       return convertTool;
