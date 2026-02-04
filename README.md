@@ -10,6 +10,44 @@
 | **WebSearch support** | Includes [dkmos2016's x-api-key fix](https://github.com/musistudio/claude-code-router/pull/1157) - removes conflicting `Authorization: Bearer` header when `x-api-key` is present, allowing Gemini's native `googleSearch` grounding to work. |
 | **Flexible API key sourcing** | API key resolution chain: `GEMINI_API_KEY` env var → macOS Keychain → config file. Allows using a placeholder in config while sourcing the real key securely. |
 
+## Quick setup
+
+```bash
+# Clone and build
+git clone https://github.com/wbern/claude-code-router.git ~/.claude-code-router/fork
+cd ~/.claude-code-router/fork
+pnpm install && pnpm build && pnpm link --global
+
+# Store API key in Keychain (optional, can use GEMINI_API_KEY env var instead)
+security add-generic-password -U -s "claude-code-router" -a "gemini-api-key" -w "YOUR_KEY"
+
+# Start router
+ccr start &
+```
+
+**config.json** (`~/.claude-code-router/config.json`):
+
+```json
+{
+  "HOST": "127.0.0.1",
+  "PORT": 3456,
+  "APIKEY": "ccr-local-xxx",
+  "Providers": [{
+    "name": "gemini",
+    "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+    "api_key": "FROM_KEYCHAIN",
+    "models": ["gemini-3-pro-preview", "gemini-3-flash-preview"],
+    "transformer": { "use": ["gemini"] }
+  }],
+  "Router": {
+    "default": "gemini,gemini-3-pro-preview",
+    "background": "gemini,gemini-3-flash-preview"
+  }
+}
+```
+
+The `api_key` field must be present (CCR requires it), but this fork's transformer ignores placeholders like `"FROM_KEYCHAIN"` and reads from `GEMINI_API_KEY` env var or macOS Keychain.
+
 ## Maintenance disclaimer
 
 **This fork is not actively maintained.** It was created for personal use and shared for convenience. If upstream [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router) incorporates these fixes, consider switching back to the official version. Use at your own discretion.
