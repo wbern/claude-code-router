@@ -513,6 +513,18 @@ export function transformRequestOut(
   return unifiedChatRequest;
 }
 
+/**
+ * Get the correct finish_reason, converting "stop" to "tool_calls" when tool calls are present.
+ * Gemini sends "stop" even when returning tool calls, but OpenAI/Anthropic format expects "tool_calls".
+ */
+function getFinishReason(candidate: any, hasToolCalls: boolean): string | null {
+  const reason = candidate?.finishReason?.toLowerCase() || null;
+  if (hasToolCalls && reason === "stop") {
+    return "tool_calls";
+  }
+  return reason;
+}
+
 export async function transformResponseOut(
   response: Response,
   providerName: string,
@@ -566,10 +578,7 @@ export async function transformResponseOut(
       id: jsonResponse.responseId,
       choices: [
         {
-          finish_reason:
-            (
-              jsonResponse.candidates[0].finishReason as string
-            )?.toLowerCase() || null,
+          finish_reason: getFinishReason(jsonResponse.candidates[0], tool_calls.length > 0),
           index: 0,
           message: {
             content: textContent,
@@ -860,8 +869,7 @@ export async function transformResponseOut(
                           role: "assistant",
                           content: textContent,
                         },
-                        finish_reason:
-                          candidate.finishReason?.toLowerCase() || null,
+                        finish_reason: getFinishReason(candidate, tool_calls.length > 0),
                         index: contentIndex,
                         logprobs: null,
                       },
@@ -935,8 +943,7 @@ export async function transformResponseOut(
                               },
                             ],
                           },
-                          finish_reason:
-                            candidate.finishReason?.toLowerCase() || null,
+                          finish_reason: getFinishReason(candidate, true),
                           index: contentIndex,
                           logprobs: null,
                         },
