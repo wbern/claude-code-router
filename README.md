@@ -1,3 +1,23 @@
+# ⚠️ Fork Notice
+
+**This is a fork of [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router) with specific fixes for Gemini integration.**
+
+## What this fork adds
+
+| Fix | Description |
+|-----|-------------|
+| **Subagent/Task tool support** | Gemini returns `finish_reason: "stop"` even when returning tool calls, but Claude Code expects `"tool_calls"`. This fork converts the finish_reason appropriately, enabling Claude Code's Task tool (subagents) to work with Gemini. |
+| **WebSearch support** | Includes [dkmos2016's x-api-key fix](https://github.com/musistudio/claude-code-router/pull/1157) - removes conflicting `Authorization: Bearer` header when `x-api-key` is present, allowing Gemini's native `googleSearch` grounding to work. |
+| **Flexible API key sourcing** | API key resolution chain: `GEMINI_API_KEY` env var → macOS Keychain → config file. Allows using a placeholder in config while sourcing the real key securely. |
+
+## Maintenance disclaimer
+
+**This fork is not actively maintained.** It was created for personal use and shared for convenience. If upstream [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router) incorporates these fixes, consider switching back to the official version. Use at your own discretion.
+
+For issues specific to this fork, feel free to open an issue, but response times are not guaranteed.
+
+---
+
 ![](blog/images/claude-code-router-img.png)
 
 [![](https://img.shields.io/badge/%F0%9F%87%A8%F0%9F%87%B3-%E4%B8%AD%E6%96%87%E7%89%88-ff0000?style=flat)](README_zh.md)
