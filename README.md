@@ -444,7 +444,7 @@ Transformers allow you to modify the request and response payloads to ensure com
 
 - `Anthropic`:If you use only the `Anthropic` transformer, it will preserve the original request and response parameters(you can use it to connect directly to an Anthropic endpoint).
 - `deepseek`: Adapts requests/responses for DeepSeek API.
-- `gemini`: Adapts requests/responses for Gemini API.
+- `gemini`: Adapts requests/responses for Gemini API. **Note:** For Gemini 3 models, this transformer automatically sets `temperature=1.0` to prevent infinite thinking loops (see [Google's Gemini 3 documentation](https://ai.google.dev/gemini-api/docs/gemini-3) and [Vertex AI prompting guide](https://cloud.google.com/vertex-ai/generative-ai/docs/start/gemini-3-prompting-guide)).
 - `openrouter`: Adapts requests/responses for OpenRouter API. It can also accept a `provider` routing parameter to specify which underlying providers OpenRouter should use. For more details, refer to the [OpenRouter documentation](https://openrouter.ai/docs/features/provider-routing). See an example below:
   ```json
     "transformer": {

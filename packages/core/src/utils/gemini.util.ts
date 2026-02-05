@@ -378,6 +378,13 @@ export function buildRequestBody(
 
   const generationConfig: any = {};
 
+  // Gemini 3 models require temperature=1.0 to prevent infinite thinking loops.
+  // Lower temperatures cause the model to get trapped in deterministic verification loops.
+  // See: https://ai.google.dev/gemini-api/docs/gemini-3
+  if (request.model.includes("gemini-3")) {
+    generationConfig.temperature = 1.0;
+  }
+
   if (
     request.reasoning &&
     request.reasoning.effort &&
@@ -525,11 +532,50 @@ function getFinishReason(candidate: any, hasToolCalls: boolean): string | null {
   return reason;
 }
 
+/**
+ * Detect if a request is a "suggestion mode" request from Claude Code.
+ * These are short requests that predict what the user might type next.
+ * They complete quickly and can cause race conditions with longer subagent requests.
+ */
+function isSuggestionModeRequest(context?: any): boolean {
+  try {
+    const body = context?.req?.body;
+    if (!body?.messages) return false;
+
+    // Check if any message contains the SUGGESTION MODE marker
+    return body.messages.some((msg: any) => {
+      if (typeof msg.content === 'string') {
+        return msg.content.includes('[SUGGESTION MODE:');
+      }
+      if (Array.isArray(msg.content)) {
+        return msg.content.some((c: any) =>
+          typeof c.text === 'string' && c.text.includes('[SUGGESTION MODE:')
+        );
+      }
+      return false;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delay helper for suggestion mode responses.
+ * This gives subagents time to complete before the suggestion response
+ * potentially triggers the UI to think the turn is complete.
+ */
+const SUGGESTION_MODE_DELAY_MS = 3000;
+
 export async function transformResponseOut(
   response: Response,
   providerName: string,
-  logger?: any
+  logger?: any,
+  context?: any
 ): Promise<Response> {
+  const isSuggestion = isSuggestionModeRequest(context);
+  if (isSuggestion) {
+    logger?.debug?.('[Gemini] Detected suggestion mode request, will delay response');
+  }
   if (response.headers.get("Content-Type")?.includes("application/json")) {
     const jsonResponse: any = await response.json();
     logger?.debug({ response: jsonResponse }, `${providerName} response:`);
@@ -611,6 +657,12 @@ export async function transformResponseOut(
         },
       },
     };
+    // Delay suggestion mode responses to prevent race conditions with subagents
+    if (isSuggestion) {
+      logger?.debug?.(`[Gemini] Delaying suggestion mode JSON response by ${SUGGESTION_MODE_DELAY_MS}ms`);
+      await new Promise(resolve => setTimeout(resolve, SUGGESTION_MODE_DELAY_MS));
+    }
+
     return new Response(JSON.stringify(res), {
       status: response.status,
       statusText: response.statusText,
@@ -1037,6 +1089,11 @@ export async function transformResponseOut(
         } catch (error) {
           controller.error(error);
         } finally {
+          // Delay suggestion mode responses to prevent race conditions with subagents
+          if (isSuggestion) {
+            logger?.debug?.(`[Gemini] Delaying suggestion mode streaming response by ${SUGGESTION_MODE_DELAY_MS}ms`);
+            await new Promise(resolve => setTimeout(resolve, SUGGESTION_MODE_DELAY_MS));
+          }
           controller.close();
         }
       },

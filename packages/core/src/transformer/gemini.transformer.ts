@@ -1,5 +1,5 @@
 import { LLMProvider, UnifiedChatRequest } from "../types/llm";
-import { Transformer } from "../types/transformer";
+import { Transformer, TransformerContext } from "../types/transformer";
 import {
   buildRequestBody,
   transformRequestOut,
@@ -88,7 +88,7 @@ export class GeminiTransformer implements Transformer {
 
   transformRequestOut = transformRequestOut;
 
-  async transformResponseOut(response: Response): Promise<Response> {
-    return transformResponseOut(response, this.name, this.logger);
+  async transformResponseOut(response: Response, context?: TransformerContext): Promise<Response> {
+    return transformResponseOut(response, this.name, this.logger, context);
   }
 }
