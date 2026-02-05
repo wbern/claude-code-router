@@ -9,6 +9,7 @@
 | **Subagent/Task tool support** | Gemini returns `finish_reason: "stop"` even when returning tool calls, but Claude Code expects `"tool_calls"`. This fork converts the finish_reason appropriately, enabling Claude Code's Task tool (subagents) to work with Gemini. |
 | **WebSearch support** | Includes [dkmos2016's x-api-key fix](https://github.com/musistudio/claude-code-router/pull/1157) - removes conflicting `Authorization: Bearer` header when `x-api-key` is present, allowing Gemini's native `googleSearch` grounding to work. |
 | **Flexible API key sourcing** | API key resolution chain: `GEMINI_API_KEY` env var → macOS Keychain → config file. Allows using a placeholder in config while sourcing the real key securely. |
+| **Summarization routing** | Gemini 3 Pro can return [thinking-only responses](https://discuss.ai.google.dev/t/gemini-3-0-pro-preview-with-empty-response-text/109818) during compaction, causing Claude Code to fail. Use `CUSTOM_ROUTER_PATH` to route summarization to Flash 2.5 (see setup script). |
 
 ## Quick setup
 
@@ -32,11 +33,12 @@ ccr start &
   "HOST": "127.0.0.1",
   "PORT": 3456,
   "APIKEY": "ccr-local-xxx",
+  "CUSTOM_ROUTER_PATH": "/Users/you/.claude-code-router/custom-router.js",
   "Providers": [{
     "name": "gemini",
     "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
     "api_key": "FROM_KEYCHAIN",
-    "models": ["gemini-3-pro-preview", "gemini-3-flash-preview"],
+    "models": ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash"],
     "transformer": { "use": ["gemini"] }
   }],
   "Router": {
@@ -45,6 +47,8 @@ ccr start &
   }
 }
 ```
+
+**Note:** The `CUSTOM_ROUTER_PATH` points to a script that routes summarization requests to Flash 2.5, avoiding [Gemini 3 Pro's empty response issue](https://discuss.ai.google.dev/t/gemini-3-0-pro-preview-with-empty-response-text/109818). See the [setup script](https://gist.github.com/wbern/93afa23eaa07a684fd177a4f73ac4dad) for the custom router code.
 
 The `api_key` field must be present (CCR requires it), but this fork's transformer ignores placeholders like `"FROM_KEYCHAIN"` and reads from `GEMINI_API_KEY` env var or macOS Keychain.
 
