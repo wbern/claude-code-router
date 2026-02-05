@@ -630,10 +630,10 @@ export async function transformResponseOut(
             content: textContent,
             role: "assistant",
             tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
-            // Add thinking as separate field if available
-            ...(thinkingSignature && {
+            // Add thinking as separate field if available (only if there's actual content)
+            ...(thinkingSignature && thinkingContent && {
               thinking: {
-                content: thinkingContent || "(no content)",
+                content: thinkingContent,
                 signature: thinkingSignature,
               },
             }),
@@ -742,34 +742,8 @@ export async function transformResponseOut(
                   (part: Part) => part.thoughtSignature
                 )?.thoughtSignature;
                 if (signature && !signatureSent) {
-                  if (!hasThinkingContent) {
-                    const thinkingChunk = {
-                      choices: [
-                        {
-                          delta: {
-                            role: "assistant",
-                            content: null,
-                            thinking: {
-                              content: "(no content)",
-                            },
-                          },
-                          finish_reason: null,
-                          index: contentIndex,
-                          logprobs: null,
-                        },
-                      ],
-                      created: parseInt(new Date().getTime() / 1000 + "", 10),
-                      id: chunk.responseId || "",
-                      model: chunk.modelVersion || "",
-                      object: "chat.completion.chunk",
-                      system_fingerprint: "fp_a49d71b8a1",
-                    };
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify(thinkingChunk)}\n\n`
-                      )
-                    );
-                  }
+                  // Only send thinking chunk if we have actual thinking content
+                  // (skip empty thinking to avoid UI showing "Thinking... (no content)")
                   const signatureChunk = {
                     choices: [
                       {
@@ -847,35 +821,8 @@ export async function transformResponseOut(
                   .map((part: Part) => part.text)
                   .join("\n");
 
-                if (!textContent && signatureSent && !contentSent) {
-                  const emptyContentChunk = {
-                    choices: [
-                      {
-                        delta: {
-                          role: "assistant",
-                          content: "(no content)",
-                        },
-                        index: contentIndex,
-                        finish_reason: null,
-                        logprobs: null,
-                      },
-                    ],
-                    created: parseInt(new Date().getTime() / 1000 + "", 10),
-                    id: chunk.responseId || "",
-                    model: chunk.modelVersion || "",
-                    object: "chat.completion.chunk",
-                    system_fingerprint: "fp_a49d71b8a1",
-                  };
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify(emptyContentChunk)}\n\n`
-                    )
-                  );
-
-                  if (!contentSent) {
-                    contentSent = true;
-                  }
-                }
+                // Skip sending empty content placeholder - let actual content through
+                // (removed "(no content)" fallback that was confusing UI)
 
                 if (hasThinkingContent && textContent && !signatureSent) {
                   if (chunk.modelVersion.includes("3")) {
