@@ -253,16 +253,14 @@ const EDIT_LOOP_ERROR_PATTERNS = [
  */
 const ERROR_INDICATORS = [
   "Error:",
-  "Error ",
   "error:",
   "ENOENT",
   "EACCES",
   "EPERM",
-  "failed",
-  "FAILED",
-  "not found",
   "Permission denied",
   "Operation not permitted",
+  "command failed",
+  "Command failed",
 ];
 
 /**
@@ -1200,7 +1198,11 @@ export async function transformResponseOut(
             logger?.debug?.(`[Gemini] Delaying suggestion mode streaming response by ${SUGGESTION_MODE_DELAY_MS}ms`);
             await new Promise(resolve => setTimeout(resolve, SUGGESTION_MODE_DELAY_MS));
           }
-          controller.close();
+          try {
+            controller.close();
+          } catch {
+            // Controller may already be in error/closed state
+          }
         }
       },
     });
