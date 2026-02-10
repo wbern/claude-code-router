@@ -498,7 +498,17 @@ export function buildRequestBody(
       includeThoughts: true,
     };
     if (request.model.includes("gemini-3")) {
-      generationConfig.thinkingConfig.thinkingLevel = request.reasoning.effort;
+      // Gemini 3 Pro only supports LOW and HIGH.
+      // Gemini 3 Flash supports LOW, MEDIUM, HIGH.
+      // Map Claude Code's effort values to valid levels per model.
+      const effort = request.reasoning.effort;
+      if (request.model.includes("pro")) {
+        generationConfig.thinkingConfig.thinkingLevel =
+          effort === "high" ? "HIGH" : "LOW";
+      } else {
+        generationConfig.thinkingConfig.thinkingLevel =
+          effort === "high" ? "HIGH" : effort === "medium" ? "MEDIUM" : "LOW";
+      }
     } else {
       const thinkingBudgets = request.model.includes("pro")
         ? [128, 32768]
@@ -1162,8 +1172,28 @@ export async function transformResponseOut(
               await processLine(line, controller);
             }
           }
-        } catch (error) {
-          controller.error(error);
+        } catch (error: any) {
+          // Gracefully handle stream interruptions (e.g., ERR_STREAM_PREMATURE_CLOSE)
+          // instead of crashing the entire response. Emit [DONE] so the client
+          // receives whatever content was already streamed.
+          if (
+            error?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+            error?.message?.includes("premature close") ||
+            error?.message?.includes("aborted")
+          ) {
+            logger?.warn?.(
+              `[Gemini] Stream interrupted (${error.code || error.message}), closing gracefully`
+            );
+            try {
+              controller.enqueue(
+                encoder.encode("data: [DONE]\n\n")
+              );
+            } catch {
+              // Controller may already be in error state
+            }
+          } else {
+            controller.error(error);
+          }
         } finally {
           // Delay suggestion mode responses to prevent race conditions with subagents
           if (isSuggestion) {
