@@ -239,6 +239,95 @@ export function tTool(tool: any): any {
   return tool;
 }
 
+/**
+ * Error patterns that indicate a model is stuck in an Edit tool loop.
+ * These are error messages returned by Claude Code's Edit tool.
+ */
+const EDIT_LOOP_ERROR_PATTERNS = [
+  "old_string and new_string are exactly the same",
+  "No changes to make",
+];
+
+/**
+ * Substrings that indicate a tool result is an error rather than success.
+ */
+const ERROR_INDICATORS = [
+  "Error:",
+  "Error ",
+  "error:",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "failed",
+  "FAILED",
+  "not found",
+  "Permission denied",
+  "Operation not permitted",
+];
+
+/**
+ * Extract text content from a message's content field.
+ */
+function getToolResultText(
+  content: string | null | Array<any>
+): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((c: any) => c.text || "").join(" ");
+  }
+  return "";
+}
+
+/**
+ * Detect if the model is stuck in a tool usage loop.
+ * Scans recent messages for repeated tool failures and returns an
+ * appropriate hint:
+ *   - Edit-specific hint when the Edit tool is called with identical strings
+ *   - Generic hint when any tool keeps erroring, nudging the model to try
+ *     a different non-destructive approach or inform the user it's stuck
+ *
+ * Returns a hint message if a loop is detected, null otherwise.
+ */
+function detectToolLoops(messages: UnifiedMessage[]): string | null {
+  const recentMessages = messages.slice(-20);
+
+  let editSameContentCount = 0;
+  let genericErrorCount = 0;
+
+  for (const msg of recentMessages) {
+    if (msg.role === "tool") {
+      const text = getToolResultText(msg.content);
+
+      if (EDIT_LOOP_ERROR_PATTERNS.some((p) => text.includes(p))) {
+        editSameContentCount++;
+      } else if (ERROR_INDICATORS.some((p) => text.includes(p))) {
+        genericErrorCount++;
+      }
+    }
+  }
+
+  // Specific hint for Edit tool same-content loop (lower threshold — very specific pattern)
+  if (editSameContentCount >= 2) {
+    return (
+      "IMPORTANT: Your last Edit/Update attempts failed because old_string and new_string were identical. " +
+      "The Edit tool requires old_string to exactly match existing file text, and new_string must be DIFFERENT from old_string. " +
+      "If you cannot express the change correctly with Edit, use the Write tool to replace the entire file contents instead."
+    );
+  }
+
+  // Generic hint for any repeated tool errors (higher threshold to avoid false positives)
+  if (genericErrorCount >= 3) {
+    return (
+      "IMPORTANT: You appear to be encountering repeated tool errors. " +
+      "Stop retrying the same failing approach. Instead, try a DIFFERENT, non-destructive method to accomplish your goal. " +
+      "If you cannot find an approach that works, tell the user what you were trying to do and that you are unable to proceed — " +
+      "do not keep retrying the same operation."
+    );
+  }
+
+  return null;
+}
+
 export function buildRequestBody(
   request: UnifiedChatRequest
 ): Record<string, any> {
@@ -376,6 +465,21 @@ export function buildRequestBody(
       }
     });
 
+  // Detect tool usage loops and inject a hint to help the model recover
+  const loopHint = detectToolLoops(request.messages);
+  if (loopHint) {
+    const lastContent = contents[contents.length - 1];
+    if (lastContent && lastContent.role === "user") {
+      // Append to existing user message to maintain role alternation
+      lastContent.parts.push({ text: loopHint });
+    } else {
+      contents.push({
+        role: "user",
+        parts: [{ text: loopHint }],
+      });
+    }
+  }
+
   const generationConfig: any = {};
 
   // Gemini 3 models require temperature=1.0 to prevent infinite thinking loops.
@@ -421,6 +525,31 @@ export function buildRequestBody(
     contents,
     tools: tools.length ? tools : undefined,
     generationConfig,
+    systemInstruction: {
+      role: "user",
+      parts: [
+        {
+          text: [
+            "<role>",
+            "You are a coding assistant operating inside Claude Code, a CLI tool for software development.",
+            "</role>",
+            "",
+            "<tool-guidance>",
+            "The Edit tool performs exact string replacement in files:",
+            "- old_string must EXACTLY match text currently in the file, including whitespace and indentation",
+            "- new_string must be DIFFERENT from old_string — identical strings will always fail",
+            "- Read a file before editing it to ensure you have the current contents",
+            "- If Edit fails, use the Write tool to replace the entire file instead",
+            "</tool-guidance>",
+            "",
+            "<constraints>",
+            "If a tool operation fails twice with the same error, switch to a different non-destructive approach.",
+            "If no approach works, clearly tell the user what you attempted and that you cannot proceed — do not keep retrying the same failing operation.",
+            "</constraints>",
+          ].join("\n"),
+        },
+      ],
+    },
   };
 
   if (request.tool_choice) {
