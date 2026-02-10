@@ -5,6 +5,14 @@ const MAX_RETRIES = 2;
 const INITIAL_BACKOFF_MS = 1000;
 
 /**
+ * How long to wait for response headers before aborting. Gemini sometimes
+ * accepts the TCP connection but never responds, hanging for 5 minutes
+ * (undici's default headersTimeout). 90 seconds is what coffeegrind123's
+ * proxy uses; Gemini CLI plans 60s. We use 90s as a conservative default.
+ */
+const CONNECT_TIMEOUT_MS = 90_000;
+
+/**
  * Check if an HTTP status code is retryable.
  * 429 = rate limited, 500/502/503/504 = transient server errors.
  */
@@ -41,29 +49,58 @@ function parseRetryAfter(header: string | null): number | null {
   return null;
 }
 
+interface BodyRetryInfo {
+  delayMs: number | null;
+  isDailyQuota: boolean;
+}
+
 /**
- * Try to extract a retry delay from the response body.
- * Gemini returns retryDelay in error.details[] (e.g., {"retryDelay": "54s"})
- * rather than in the standard Retry-After HTTP header.
+ * Parse retry info from the response body. Gemini returns retryDelay in
+ * error.details[] (e.g., {"retryDelay": "54s"}) rather than in the standard
+ * Retry-After HTTP header.
+ *
+ * Also checks quotaId to distinguish per-minute rate limits (retryable) from
+ * per-day quota exhaustion (not retryable — retryDelay is meaningless for
+ * daily limits, confirmed by Google engineer in developer forums).
  */
-function parseBodyRetryDelay(bodyText: string): number | null {
+function parseBodyRetryInfo(bodyText: string): BodyRetryInfo {
   try {
     const json = JSON.parse(bodyText);
     const details = json?.error?.details;
-    if (!Array.isArray(details)) return null;
+    if (!Array.isArray(details)) return { delayMs: null, isDailyQuota: false };
+
+    let delayMs: number | null = null;
+    let isDailyQuota = false;
+
     for (const detail of details) {
+      // RetryInfo detail: { "@type": "...RetryInfo", "retryDelay": "54s" }
       const delay = detail?.retryDelay;
       if (typeof delay === "string") {
         const seconds = parseFloat(delay);
         if (!isNaN(seconds) && seconds > 0) {
-          return Math.max(INITIAL_BACKOFF_MS, seconds * 1000);
+          delayMs = Math.max(INITIAL_BACKOFF_MS, seconds * 1000);
         }
       }
+      // QuotaFailure detail has metadata.quotaId indicating limit type
+      const quotaId = detail?.metadata?.quotaId;
+      if (typeof quotaId === "string" && quotaId.includes("PerDay")) {
+        isDailyQuota = true;
+      }
     }
+
+    return { delayMs, isDailyQuota };
   } catch {
-    /* not parseable JSON */
+    return { delayMs: null, isDailyQuota: false };
   }
-  return null;
+}
+
+/**
+ * Add 10-30% random jitter to a backoff delay to avoid thundering herd.
+ * Recommended by Google's official retry documentation.
+ */
+function withJitter(delayMs: number): number {
+  const jitter = delayMs * (0.1 + Math.random() * 0.2);
+  return Math.round(delayMs + jitter);
 }
 
 export async function sendUnifiedRequest(
@@ -84,24 +121,11 @@ export async function sendUnifiedRequest(
     });
   }
 
-  const abortController = config.signal ? new AbortController() : null;
-  const timeoutSignal = AbortSignal.timeout(config.TIMEOUT ?? 60 * 1000 * 60);
-  let combinedSignal: AbortSignal;
-
-  if (config.signal && abortController) {
-    const abortHandler = () => abortController.abort();
-    config.signal.addEventListener("abort", abortHandler, { once: true });
-    timeoutSignal.addEventListener("abort", abortHandler, { once: true });
-    combinedSignal = abortController.signal;
-  } else {
-    combinedSignal = timeoutSignal;
-  }
-
   const fetchOptions: RequestInit = {
     method: "POST",
     headers: headers,
     body: JSON.stringify(request),
-    signal: combinedSignal,
+    // signal is set per-attempt below
   };
 
   if (config.httpsProxy) {
@@ -133,10 +157,11 @@ export async function sendUnifiedRequest(
       const headerRetryMs = lastResponse
         ? parseRetryAfter(lastResponse.headers?.get("retry-after") ?? null)
         : null;
-      const backoff =
+      const baseBackoff =
         headerRetryMs ??
         bodyRetryDelayMs ??
         INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+      const backoff = withJitter(baseBackoff);
       const reason = lastError
         ? `network error: ${lastError.code || lastError.message}`
         : `status=${lastResponse?.status}`;
@@ -148,11 +173,52 @@ export async function sendUnifiedRequest(
       lastError = undefined;
     }
 
-    // Wrap fetch to catch network-level errors (HeadersTimeout, connection reset, etc.)
+    // Per-attempt abort controller with a 90s headers timeout.
+    // This replaces the old 60-minute AbortSignal.timeout which let requests
+    // hang for 5 minutes waiting on undici's headersTimeout.
+    const attemptAC = new AbortController();
+
+    // Forward caller's abort signal (e.g., user pressing Ctrl+C)
+    let callerAbortHandler: (() => void) | null = null;
+    if (config.signal) {
+      if (config.signal.aborted) {
+        throw config.signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+      callerAbortHandler = () => attemptAC.abort(config.signal.reason);
+      config.signal.addEventListener("abort", callerAbortHandler, { once: true });
+    }
+
+    // Short timeout to receive response headers. Once headers arrive and
+    // fetch() resolves, this timer is cleared — body streaming is not affected.
+    const connectTimer = setTimeout(
+      () => attemptAC.abort(new Error("CONNECT_TIMEOUT")),
+      CONNECT_TIMEOUT_MS
+    );
+
+    const cleanup = () => {
+      clearTimeout(connectTimer);
+      if (callerAbortHandler && config.signal) {
+        config.signal.removeEventListener("abort", callerAbortHandler);
+      }
+    };
+
     try {
-      lastResponse = await fetch(requestUrl, fetchOptions);
+      lastResponse = await fetch(requestUrl, {
+        ...fetchOptions,
+        signal: attemptAC.signal,
+      });
+      cleanup();
     } catch (error: any) {
-      if (isRetryableNetworkError(error) && attempt < MAX_RETRIES) {
+      cleanup();
+
+      // Caller-initiated abort (Ctrl+C) — propagate immediately, don't retry
+      if (config.signal?.aborted) {
+        throw error;
+      }
+
+      // Our connect timeout or transient network error — retry if attempts remain
+      const isOurTimeout = error.name === "AbortError";
+      if ((isRetryableNetworkError(error) || isOurTimeout) && attempt < MAX_RETRIES) {
         lastError = error;
         lastResponse = undefined;
         continue;
@@ -174,12 +240,27 @@ export async function sendUnifiedRequest(
       return lastResponse;
     }
 
-    // Drain response body to release TCP connection, and extract any retry
-    // delay hint from the body (Gemini sends retryDelay in error.details[]
-    // rather than in the standard Retry-After HTTP header)
+    // Drain response body to release TCP connection, and extract retry info.
+    // For 429s, Gemini embeds retryDelay and quotaId in the error body.
     try {
       const bodyText = await lastResponse.text();
-      bodyRetryDelayMs = parseBodyRetryDelay(bodyText);
+      const retryInfo = parseBodyRetryInfo(bodyText);
+
+      if (retryInfo.isDailyQuota) {
+        // Daily quota exhausted — retrying is pointless, it won't reset
+        // until midnight Pacific. Return a synthetic response so the caller
+        // sees the 429 and can handle it (fallback or error to user).
+        logger?.error?.(
+          `[Request] Daily quota exhausted (429 with PerDay quotaId), not retrying`
+        );
+        return new Response(bodyText, {
+          status: lastResponse.status,
+          statusText: lastResponse.statusText,
+          headers: lastResponse.headers,
+        });
+      }
+
+      bodyRetryDelayMs = retryInfo.delayMs;
     } catch {
       /* ignore drain errors */
     }
