@@ -19,7 +19,7 @@ function isRetryableStatus(status: number): boolean {
 function parseRetryAfter(header: string | null): number | null {
   if (!header) return null;
   const seconds = parseInt(header, 10);
-  if (!isNaN(seconds)) return seconds * 1000;
+  if (!isNaN(seconds)) return Math.max(INITIAL_BACKOFF_MS, seconds * 1000);
   const date = Date.parse(header);
   if (!isNaN(date)) return Math.max(0, date - Date.now());
   return null;
@@ -107,6 +107,9 @@ export async function sendUnifiedRequest(
     if (!isRetryableStatus(lastResponse.status)) {
       return lastResponse;
     }
+
+    // Drain response body to release the TCP connection before retrying
+    try { await lastResponse.text(); } catch { /* ignore */ }
 
     // On last attempt, return whatever we got
     if (attempt === MAX_RETRIES) {

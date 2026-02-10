@@ -292,15 +292,21 @@ function detectToolLoops(messages: UnifiedMessage[]): string | null {
   let editSameContentCount = 0;
   let genericErrorCount = 0;
 
-  for (const msg of recentMessages) {
-    if (msg.role === "tool") {
-      const text = getToolResultText(msg.content);
+  // Walk backwards — only count a trailing streak of errors.
+  // A successful tool result breaks the streak, preventing false positives
+  // from scattered errors in otherwise healthy sessions.
+  for (let i = recentMessages.length - 1; i >= 0; i--) {
+    const msg = recentMessages[i];
+    if (msg.role !== "tool") continue;
 
-      if (EDIT_LOOP_ERROR_PATTERNS.some((p) => text.includes(p))) {
-        editSameContentCount++;
-      } else if (ERROR_INDICATORS.some((p) => text.includes(p))) {
-        genericErrorCount++;
-      }
+    const text = getToolResultText(msg.content);
+
+    if (EDIT_LOOP_ERROR_PATTERNS.some((p) => text.includes(p))) {
+      editSameContentCount++;
+    } else if (ERROR_INDICATORS.some((p) => text.includes(p))) {
+      genericErrorCount++;
+    } else {
+      break;
     }
   }
 
@@ -1171,14 +1177,14 @@ export async function transformResponseOut(
             }
           }
         } catch (error: any) {
-          // Gracefully handle stream interruptions (e.g., ERR_STREAM_PREMATURE_CLOSE)
-          // instead of crashing the entire response. Emit [DONE] so the client
-          // receives whatever content was already streamed.
-          if (
+          // Only recover from infrastructure-level stream failures.
+          // User-initiated aborts (AbortError) must propagate so the client
+          // knows the response was intentionally cancelled, not completed.
+          const isPrematureClose =
             error?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
-            error?.message?.includes("premature close") ||
-            error?.message?.includes("aborted")
-          ) {
+            error?.message?.includes("premature close");
+
+          if (isPrematureClose) {
             logger?.warn?.(
               `[Gemini] Stream interrupted (${error.code || error.message}), closing gracefully`
             );
