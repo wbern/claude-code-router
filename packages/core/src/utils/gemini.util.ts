@@ -469,19 +469,14 @@ export function buildRequestBody(
       }
     });
 
-  // Detect tool usage loops and inject a hint to help the model recover
+  // Detect tool usage loops and inject a hint to help the model recover.
+  // Always as a separate user message to avoid mixing text with functionResponse parts.
   const loopHint = detectToolLoops(request.messages);
   if (loopHint) {
-    const lastContent = contents[contents.length - 1];
-    if (lastContent && lastContent.role === "user") {
-      // Append to existing user message to maintain role alternation
-      lastContent.parts.push({ text: loopHint });
-    } else {
-      contents.push({
-        role: "user",
-        parts: [{ text: loopHint }],
-      });
-    }
+    contents.push({
+      role: "user",
+      parts: [{ text: loopHint }],
+    });
   }
 
   const generationConfig: any = {};

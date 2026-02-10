@@ -21,7 +21,7 @@ function parseRetryAfter(header: string | null): number | null {
   const seconds = parseInt(header, 10);
   if (!isNaN(seconds)) return Math.max(INITIAL_BACKOFF_MS, seconds * 1000);
   const date = Date.parse(header);
-  if (!isNaN(date)) return Math.max(0, date - Date.now());
+  if (!isNaN(date)) return Math.max(INITIAL_BACKOFF_MS, date - Date.now());
   return null;
 }
 
@@ -108,13 +108,13 @@ export async function sendUnifiedRequest(
       return lastResponse;
     }
 
-    // Drain response body to release the TCP connection before retrying
-    try { await lastResponse.text(); } catch { /* ignore */ }
-
-    // On last attempt, return whatever we got
+    // On last attempt, return with body intact for the caller to read
     if (attempt === MAX_RETRIES) {
       return lastResponse;
     }
+
+    // Drain response body to release the TCP connection before retrying
+    try { await lastResponse.text(); } catch { /* ignore */ }
   }
 
   return lastResponse!;
