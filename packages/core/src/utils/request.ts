@@ -13,6 +13,22 @@ function isRetryableStatus(status: number): boolean {
 }
 
 /**
+ * Check if a fetch error is a transient network failure worth retrying.
+ * These are infrastructure-level failures where the server never responded.
+ */
+function isRetryableNetworkError(error: any): boolean {
+  const code = error?.code;
+  return (
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_SOCKET" ||
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT"
+  );
+}
+
+/**
  * Parse the Retry-After header value into milliseconds.
  * Supports both seconds (integer) and HTTP-date formats.
  */
@@ -22,6 +38,31 @@ function parseRetryAfter(header: string | null): number | null {
   if (!isNaN(seconds)) return Math.max(INITIAL_BACKOFF_MS, seconds * 1000);
   const date = Date.parse(header);
   if (!isNaN(date)) return Math.max(INITIAL_BACKOFF_MS, date - Date.now());
+  return null;
+}
+
+/**
+ * Try to extract a retry delay from the response body.
+ * Gemini returns retryDelay in error.details[] (e.g., {"retryDelay": "54s"})
+ * rather than in the standard Retry-After HTTP header.
+ */
+function parseBodyRetryDelay(bodyText: string): number | null {
+  try {
+    const json = JSON.parse(bodyText);
+    const details = json?.error?.details;
+    if (!Array.isArray(details)) return null;
+    for (const detail of details) {
+      const delay = detail?.retryDelay;
+      if (typeof delay === "string") {
+        const seconds = parseFloat(delay);
+        if (!isNaN(seconds) && seconds > 0) {
+          return Math.max(INITIAL_BACKOFF_MS, seconds * 1000);
+        }
+      }
+    }
+  } catch {
+    /* not parseable JSON */
+  }
   return null;
 }
 
@@ -82,22 +123,42 @@ export async function sendUnifiedRequest(
     "final request"
   );
 
-  // Retry loop for transient failures (429, 5xx)
+  // Retry loop for transient failures (network errors, 429, 5xx)
   let lastResponse: Response | undefined;
+  let lastError: any = undefined;
+  let bodyRetryDelayMs: number | null = null;
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const retryAfter = parseRetryAfter(
-        lastResponse?.headers?.get("retry-after") ?? null
-      );
+      const headerRetryMs = lastResponse
+        ? parseRetryAfter(lastResponse.headers?.get("retry-after") ?? null)
+        : null;
       const backoff =
-        retryAfter ?? INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+        headerRetryMs ??
+        bodyRetryDelayMs ??
+        INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+      const reason = lastError
+        ? `network error: ${lastError.code || lastError.message}`
+        : `status=${lastResponse?.status}`;
       logger?.warn?.(
-        `[Request] Retrying after ${backoff}ms (attempt ${attempt + 1}/${MAX_RETRIES + 1}, status=${lastResponse?.status})`
+        `[Request] Retrying after ${backoff}ms (attempt ${attempt + 1}/${MAX_RETRIES + 1}, ${reason})`
       );
       await new Promise((resolve) => setTimeout(resolve, backoff));
+      bodyRetryDelayMs = null;
+      lastError = undefined;
     }
 
-    lastResponse = await fetch(requestUrl, fetchOptions);
+    // Wrap fetch to catch network-level errors (HeadersTimeout, connection reset, etc.)
+    try {
+      lastResponse = await fetch(requestUrl, fetchOptions);
+    } catch (error: any) {
+      if (isRetryableNetworkError(error) && attempt < MAX_RETRIES) {
+        lastError = error;
+        lastResponse = undefined;
+        continue;
+      }
+      throw error;
+    }
 
     // Don't retry streaming responses (can't re-read the body) or successful ones
     if (lastResponse.ok || request.stream) {
@@ -113,8 +174,20 @@ export async function sendUnifiedRequest(
       return lastResponse;
     }
 
-    // Drain response body to release the TCP connection before retrying
-    try { await lastResponse.text(); } catch { /* ignore */ }
+    // Drain response body to release TCP connection, and extract any retry
+    // delay hint from the body (Gemini sends retryDelay in error.details[]
+    // rather than in the standard Retry-After HTTP header)
+    try {
+      const bodyText = await lastResponse.text();
+      bodyRetryDelayMs = parseBodyRetryDelay(bodyText);
+    } catch {
+      /* ignore drain errors */
+    }
+  }
+
+  // If all retries were network errors, throw the last one
+  if (lastError && !lastResponse) {
+    throw lastError;
   }
 
   return lastResponse!;
