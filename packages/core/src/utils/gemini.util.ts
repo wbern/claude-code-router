@@ -768,8 +768,8 @@ export async function transformResponseOut(
             content: textContent,
             role: "assistant",
             tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
-            // Add thinking as separate field if available (only if there's actual content)
-            ...(thinkingSignature && thinkingContent && {
+            // Preserve thinking signature even without content (Gemini 3 requires it on function calls)
+            ...(thinkingSignature && {
               thinking: {
                 content: thinkingContent,
                 signature: thinkingSignature,
@@ -880,8 +880,7 @@ export async function transformResponseOut(
                   (part: Part) => part.thoughtSignature
                 )?.thoughtSignature;
                 if (signature && !signatureSent) {
-                  // Only send thinking chunk if we have actual thinking content
-                  // (skip empty thinking to avoid UI showing "Thinking... (no content)")
+                  // Send signature even without thinking content (Gemini 3 requires it for function calls)
                   const signatureChunk = {
                     choices: [
                       {

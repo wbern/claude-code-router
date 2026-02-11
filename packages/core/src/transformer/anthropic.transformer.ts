@@ -1042,11 +1042,12 @@ export class AnthropicTransformer implements Transformer {
           });
         });
       }
-      if ((choice.message as any)?.thinking?.content) {
+      const thinking = (choice.message as any)?.thinking;
+      if (thinking?.content || thinking?.signature) {
         content.push({
           type: "thinking",
-          thinking: (choice.message as any).thinking.content,
-          signature: (choice.message as any).thinking.signature,
+          thinking: thinking.content || "",
+          signature: thinking.signature,
         });
       }
       const result = {
