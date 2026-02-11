@@ -20,7 +20,7 @@ function getApiKeyFromKeychain(): string | null {
 
   try {
     const result = execSync(
-      'security find-generic-password -s "claude-code-router" -a "gemini-api-key" -w 2>/dev/null',
+      'security find-generic-password -s "gemini-api-key" -a "$USER" -w 2>/dev/null',
       { encoding: "utf8", timeout: 5000 }
     ).trim();
 
@@ -54,7 +54,7 @@ function resolveApiKey(providerApiKey: string): string {
 
   throw new Error(
     "No Gemini API key found. Set GEMINI_API_KEY env var or store in macOS Keychain with: " +
-      'security add-generic-password -s "claude-code-router" -a "gemini-api-key" -w "YOUR_KEY"'
+      'security add-generic-password -a "$USER" -s "gemini-api-key" -w "YOUR_KEY"'
   );
 }
 
